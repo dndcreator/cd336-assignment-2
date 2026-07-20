@@ -1,6 +1,7 @@
 import argparse
 import math
 import timeit
+from contextlib import nullcontext
 
 import numpy as np
 from einops import einsum
@@ -64,17 +65,24 @@ def get_random_batch(cfg: Namespace) -> torch.Tensor:
 
 @nvtx.range("Forward Model")
 def forward(cfg: Namespace, model: BasicsTransformerLM, device: torch.device) -> tuple[float, float]:
+    if cfg.mixed_precision:
+        ctx = torch.autocast(device_type="cuda", dtype=torch.float16)
+    else:
+        ctx = nullcontext()
+
     for _ in range(cfg.warmup_steps):
         data = get_random_batch(cfg=cfg).to(device=device)
-        _ = model(data)
+        with ctx:
+            _ = model(data)
         torch.cuda.synchronize()
 
     times = []
     for _ in range(cfg.benchmark_steps):
         data = get_random_batch(cfg=cfg).to(device=device)
         start_time = timeit.default_timer()
-        with nvtx.range("Forward-Pass"):
-            _ = model(data)
+        with ctx:
+            with nvtx.range("Forward-Pass"):
+                _ = model(data)
         torch.cuda.synchronize()
         end_time = timeit.default_timer()
         times.append(end_time - start_time)
@@ -157,6 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--benchmark_steps", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--context_length", type=int, default=256)
+    parser.add_argument("mixed_precision", action="store_true")
 
     return parser.parse_args()
 
